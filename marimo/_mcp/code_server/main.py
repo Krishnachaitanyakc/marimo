@@ -9,7 +9,7 @@ in a running marimo kernel via the scratchpad.
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 from marimo._ai._tools.types import (
     CodeExecutionResult,
@@ -23,13 +23,23 @@ from marimo._server.scratchpad import (
     ScratchCellListener,
     extract_result,
 )
-from marimo._types.ids import SessionId
+from marimo._types.ids import ConsumerId, SessionId
 
 LOGGER = marimo_logger()
 
 if TYPE_CHECKING:
     from starlette.applications import Starlette
     from starlette.types import Receive, Scope, Send
+
+    from marimo._messaging.types import KernelMessage
+    from marimo._session.events import SessionEventBus
+    from marimo._session.session import Session
+
+
+class HintResponse(TypedDict):
+    """Response from the hint tool."""
+
+    hint: str
 
 
 def setup_code_mcp_server(
@@ -76,7 +86,7 @@ def setup_code_mcp_server(
     )
 
     @mcp.tool()
-    async def list_sessions() -> ListSessionsResult:
+    async def list_sessions() -> ListSessionsResult | HintResponse:
         """List active marimo sessions.
 
         Returns a list of active sessions, each with 'name', 'path',
@@ -100,6 +110,11 @@ def setup_code_mcp_server(
                         session_id=SessionId(session_id),
                     )
                 )
+
+        if len(sessions) == 0:
+            return HintResponse(
+                hint="No active sessions found. Use the `create_session` tool to start a new session."
+            )
 
         return ListSessionsResult(sessions=sessions[::-1])
 
@@ -141,6 +156,56 @@ def setup_code_mcp_server(
                 )
 
             return extract_result(session)
+
+    @mcp.tool()
+    async def create_session() -> dict[str, str]:
+        """Create a new marimo notebook session.
+
+        Returns the session_id of the newly created session.
+        Use this session_id with execute_code to run code.
+        """
+        import uuid
+
+        from marimo._server.file_router import AppFileRouter
+        from marimo._session.consumer import SessionConsumer
+        from marimo._session.model import ConnectionState
+
+        state = AppStateBase.from_app(app)
+        session_manager = state.session_manager
+
+        session_id = SessionId(uuid.uuid4().hex[:8])
+        file_key = f"{AppFileRouter.NEW_FILE}_{session_id}"
+
+        class McpSessionConsumer(SessionConsumer):
+            @property
+            def consumer_id(self) -> ConsumerId:
+                return ConsumerId(f"mcp-{session_id}")
+
+            def notify(self, notification: KernelMessage) -> None:
+                pass
+
+            def connection_state(self) -> ConnectionState:
+                return ConnectionState.OPEN
+
+            def on_attach(
+                self, session: Session, event_bus: SessionEventBus
+            ) -> None:
+                pass
+
+            def on_detach(self) -> None:
+                pass
+
+        session_manager.create_session(
+            session_id=session_id,
+            session_consumer=McpSessionConsumer(),
+            query_params={},
+            file_key=file_key,
+            auto_instantiate=True,
+        )
+
+        return {
+            "session_id": session_id,
+        }
 
     # Build the streamable HTTP app
     mcp_app = mcp.streamable_http_app()
