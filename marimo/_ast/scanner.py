@@ -577,16 +577,16 @@ def scan_parse_fallback(source: str, filepath: str) -> list[ast.stmt]:
     """Fallback parser: scan for cell boundaries, parse each cell individually.
 
     Called when ast.parse() on the full file fails due to syntax errors.
-    Returns AST nodes with unparsable cells wrapped as app._unparsable_cell().
+    Returns AST nodes with unparsable cells wrapped as app._unparsable_cell(),
+    or an empty list if no cell boundaries are found (caller should re-raise).
     """
     from marimo._ast.parse import ast_parse
 
     if not _has_cell_boundaries(source):
-        # Not a notebook — re-raise the original error
-        ast.parse(source, filename=filepath)
-        return []  # unreachable
+        return []
 
     scan = scan_notebook(source)
+
     nodes: list[ast.stmt] = []
 
     # Preamble

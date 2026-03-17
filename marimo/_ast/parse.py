@@ -521,10 +521,14 @@ class Parser:
             )
             return PeekStack(iter(tree.body))
         except SyntaxError:
-            # File has syntax errors — use scanner to recover individual cells
+            # File has syntax errors — use scanner to recover individual cells.
             nodes = _scan_parse_fallback(
                 self.extractor.contents or "", self.filepath
             )
+            # If we cannot extract any cells, then raise the syntax error, as
+            # there's nothing we can do at all.
+            if not nodes:
+                raise
             return PeekStack(iter(nodes))
 
     def parse_header(self, body: PeekStack[Node]) -> ParseResult[Header]:
