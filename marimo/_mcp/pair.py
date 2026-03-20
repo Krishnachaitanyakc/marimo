@@ -17,7 +17,9 @@ import os
 import sys
 import uuid
 from datetime import date
-from typing import TYPE_CHECKING, Union
+from typing import Union
+
+from mcp.types import ImageContent, TextContent
 
 from marimo import _loggers
 from marimo._ai._tools.types import (
@@ -25,9 +27,6 @@ from marimo._ai._tools.types import (
     ListSessionsResult,
     MarimoNotebookInfo,
 )
-
-if TYPE_CHECKING:
-    from mcp.types import ImageContent, TextContent
 
 LOGGER = _loggers.marimo_logger()
 
@@ -137,8 +136,6 @@ def _extract_images(
 
 def _result_to_text(result: CodeExecutionResult) -> object:
     """Serialize a CodeExecutionResult to an MCP TextContent."""
-    from mcp.types import TextContent
-
     return TextContent(
         type="text",
         text=json.dumps(dataclasses.asdict(result)),
@@ -267,7 +264,6 @@ async def _run_stdio_server(port: int | None, sandbox: bool) -> None:
 
     import uvicorn
     from mcp.server.fastmcp import FastMCP
-    from mcp.types import ImageContent
 
     from marimo._cli.sandbox import SandboxMode
     from marimo._config.manager import get_default_config_manager
@@ -366,11 +362,16 @@ async def _run_stdio_server(port: int | None, sandbox: bool) -> None:
         await asyncio.sleep(0.05)
 
     def _shutdown_handler(*_args: object) -> None:
-        """Perform cleanup then exit."""
+        """Perform cleanup then exit.
+
+        We cannot raise KeyboardInterrupt here because the MCP stdio
+        server holds a buffered reader lock on stdin in a daemon thread;
+        raising during finalization triggers a fatal error.  Instead we
+        clean up explicitly then hard-exit.
+        """
         session_manager.shutdown()
         server.should_exit = True
-        # Raise in the main thread so the event loop's finally block runs.
-        raise KeyboardInterrupt
+        os._exit(0)
 
     signal.signal(signal.SIGINT, _shutdown_handler)
 
