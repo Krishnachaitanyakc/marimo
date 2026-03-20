@@ -9,7 +9,7 @@ in a running marimo kernel via the scratchpad.
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING
 
 from marimo._ai._tools.types import (
     CodeExecutionResult,
@@ -23,23 +23,13 @@ from marimo._server.scratchpad import (
     ScratchCellListener,
     extract_result,
 )
-from marimo._types.ids import ConsumerId, SessionId
+from marimo._types.ids import SessionId
 
 LOGGER = marimo_logger()
 
 if TYPE_CHECKING:
     from starlette.applications import Starlette
     from starlette.types import Receive, Scope, Send
-
-    from marimo._messaging.types import KernelMessage
-    from marimo._session.events import SessionEventBus
-    from marimo._session.session import Session
-
-
-class HintResponse(TypedDict):
-    """Response from the hint tool."""
-
-    hint: str
 
 
 def setup_code_mcp_server(
@@ -86,12 +76,15 @@ def setup_code_mcp_server(
     )
 
     @mcp.tool()
-    async def list_sessions() -> ListSessionsResult | HintResponse:
+    async def list_sessions() -> ListSessionsResult:
         """List active marimo sessions.
 
         Returns a list of active sessions, each with 'name', 'path',
         and 'session_id' fields.
         Use the session_id with execute_code to run code in that session.
+
+        If no sessions are found, use the `create_session` tool to start
+        a new session.
         """
         state = AppStateBase.from_app(app)
         session_manager = state.session_manager
@@ -110,11 +103,6 @@ def setup_code_mcp_server(
                         session_id=SessionId(session_id),
                     )
                 )
-
-        if len(sessions) == 0:
-            return HintResponse(
-                hint="No active sessions found. Use the `create_session` tool to start a new session."
-            )
 
         return ListSessionsResult(sessions=sessions[::-1])
 
@@ -167,8 +155,7 @@ def setup_code_mcp_server(
         import uuid
 
         from marimo._server.file_router import AppFileRouter
-        from marimo._session.consumer import SessionConsumer
-        from marimo._session.model import ConnectionState
+        from marimo._session.consumer import NoOpSessionConsumer
 
         state = AppStateBase.from_app(app)
         session_manager = state.session_manager
@@ -176,28 +163,9 @@ def setup_code_mcp_server(
         session_id = SessionId(uuid.uuid4().hex[:8])
         file_key = f"{AppFileRouter.NEW_FILE}_{session_id}"
 
-        class McpSessionConsumer(SessionConsumer):
-            @property
-            def consumer_id(self) -> ConsumerId:
-                return ConsumerId(f"mcp-{session_id}")
-
-            def notify(self, notification: KernelMessage) -> None:
-                pass
-
-            def connection_state(self) -> ConnectionState:
-                return ConnectionState.OPEN
-
-            def on_attach(
-                self, session: Session, event_bus: SessionEventBus
-            ) -> None:
-                pass
-
-            def on_detach(self) -> None:
-                pass
-
         session_manager.create_session(
             session_id=session_id,
-            session_consumer=McpSessionConsumer(),
+            session_consumer=NoOpSessionConsumer(f"mcp-{session_id}"),
             query_params={},
             file_key=file_key,
             auto_instantiate=True,

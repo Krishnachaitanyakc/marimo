@@ -17,10 +17,7 @@ import os
 import sys
 import uuid
 from datetime import date
-from pathlib import Path
-from typing import Union
-
-from mcp.types import ImageContent, TextContent
+from typing import TYPE_CHECKING, Union
 
 from marimo import _loggers
 from marimo._ai._tools.types import (
@@ -28,6 +25,9 @@ from marimo._ai._tools.types import (
     ListSessionsResult,
     MarimoNotebookInfo,
 )
+
+if TYPE_CHECKING:
+    from mcp.types import ImageContent, TextContent
 
 LOGGER = _loggers.marimo_logger()
 
@@ -137,6 +137,8 @@ def _extract_images(
 
 def _result_to_text(result: CodeExecutionResult) -> object:
     """Serialize a CodeExecutionResult to an MCP TextContent."""
+    from mcp.types import TextContent
+
     return TextContent(
         type="text",
         text=json.dumps(dataclasses.asdict(result)),
@@ -146,16 +148,13 @@ def _result_to_text(result: CodeExecutionResult) -> object:
 def _auto_save(session: object) -> None:
     """Persist the current notebook state to disk.
 
-    Builds the notebook IR from ``SessionView.last_executed_code`` (the
-    runtime source of truth) rather than the static cell manager, so that
-    cells added during the session are included.
+    Uses the public ``AppFileManager.save()`` API with a
+    ``SaveNotebookRequest`` built from the session view's
+    ``last_executed_code``.
     """
+    from marimo._ast.cell import CellConfig
     from marimo._ast.names import DEFAULT_CELL_NAME
-    from marimo._schemas.serialization import (
-        AppInstantiation,
-        CellDef,
-        NotebookSerializationV1,
-    )
+    from marimo._server.models.models import SaveNotebookRequest
     from marimo._session.types import Session
 
     if not isinstance(session, Session):
@@ -173,24 +172,56 @@ def _auto_save(session: object) -> None:
     else:
         ordered_ids = list(sv.last_executed_code.keys())
 
-    cells = [
-        CellDef(
-            code=sv.last_executed_code.get(cid, ""),
-            name=DEFAULT_CELL_NAME,
-        )
-        for cid in ordered_ids
-    ]
+    if not ordered_ids:
+        return
 
-    notebook = NotebookSerializationV1(
-        app=AppInstantiation(options=fm.app.config.asdict()),
-        cells=cells,
+    request = SaveNotebookRequest(
+        cell_ids=ordered_ids,
+        codes=[sv.last_executed_code.get(cid, "") for cid in ordered_ids],
+        names=[DEFAULT_CELL_NAME] * len(ordered_ids),
+        configs=[CellConfig()] * len(ordered_ids),
         filename=fm.path,
+        persist=True,
     )
 
     try:
-        fm._save_file(Path(fm.path), notebook=notebook, persist=True)
+        fm.save(request)
     except Exception:
         LOGGER.debug("Auto-save failed for session %s", fm.path)
+
+
+def _record_executed_code(session: object, code: str) -> None:
+    """Record a code execution in the session view via the public API."""
+    from marimo._messaging.notification import UpdateCellIdsNotification
+    from marimo._runtime.commands import ExecuteCellsCommand
+    from marimo._session.types import Session
+    from marimo._types.ids import CellId_t
+
+    if not isinstance(session, Session):
+        return
+
+    new_cell_id = CellId_t(uuid.uuid4().hex[:8])
+    sv = session.session_view
+
+    # Use add_control_request to properly record the executed code
+    # (this calls _touch() and _add_last_run_code internally).
+    sv.add_control_request(
+        ExecuteCellsCommand(cell_ids=[new_cell_id], codes=[code])
+    )
+
+    # Update cell ordering
+    if sv.cell_ids is not None:
+        sv.add_notification(
+            UpdateCellIdsNotification(
+                cell_ids=[*sv.cell_ids.cell_ids, new_cell_id]
+            )
+        )
+    else:
+        sv.add_notification(
+            UpdateCellIdsNotification(
+                cell_ids=list(sv.last_executed_code.keys())
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -232,12 +263,14 @@ def pair_stdio(port: int | None, sandbox: bool) -> None:
 
 async def _run_stdio_server(port: int | None, sandbox: bool) -> None:
     """Create and run the MCP stdio server with a backing HTTP server."""
+    import signal
+
     import uvicorn
     from mcp.server.fastmcp import FastMCP
+    from mcp.types import ImageContent
 
     from marimo._cli.sandbox import SandboxMode
     from marimo._config.manager import get_default_config_manager
-    from marimo._messaging.types import KernelMessage
     from marimo._runtime.commands import SerializedCLIArgs
     from marimo._server.api import lifespans
     from marimo._server.config import StarletteServerStateInit
@@ -251,11 +284,9 @@ async def _run_stdio_server(port: int | None, sandbox: bool) -> None:
     )
     from marimo._server.session_manager import SessionManager
     from marimo._server.utils import initialize_mimetypes
-    from marimo._session.consumer import SessionConsumer
-    from marimo._session.events import SessionEventBus
-    from marimo._session.model import ConnectionState, SessionMode
-    from marimo._session.types import Session
-    from marimo._types.ids import CellId_t, ConsumerId, SessionId
+    from marimo._session.consumer import NoOpSessionConsumer
+    from marimo._session.model import SessionMode
+    from marimo._types.ids import SessionId
     from marimo._utils.lifespans import Lifespans
     from marimo._utils.net import find_free_port
 
@@ -326,14 +357,22 @@ async def _run_stdio_server(port: int | None, sandbox: bool) -> None:
     app.state.server = server
     server_task = asyncio.create_task(server.serve())
 
-    # Wait for uvicorn startup to complete (it installs its own SIGINT
-    # handler during startup), then override with ours so that Ctrl+C
-    # kills the process immediately instead of entering uvicorn's
-    # graceful-shutdown dance.
-    await asyncio.sleep(0.1)
-    import signal
+    # Wait for uvicorn to signal that it's ready.  ``server.started``
+    # is a bool set once the server has bound to the port and installed
+    # its own SIGINT handler.  We then override that handler so that
+    # Ctrl+C performs a clean shutdown via KeyboardInterrupt instead
+    # of entering uvicorn's graceful-shutdown dance.
+    while not server.started:  # noqa: ASYNC110
+        await asyncio.sleep(0.05)
 
-    signal.signal(signal.SIGINT, lambda *_: os._exit(0))
+    def _shutdown_handler(*_args: object) -> None:
+        """Perform cleanup then exit."""
+        session_manager.shutdown()
+        server.should_exit = True
+        # Raise in the main thread so the event loop's finally block runs.
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGINT, _shutdown_handler)
 
     # -- URL helpers --
     base_url = f"http://{host}:{port}"
@@ -343,30 +382,6 @@ async def _run_stdio_server(port: int | None, sandbox: bool) -> None:
 
     # -- MCP server --
     mcp = FastMCP("marimo-pair")
-
-    class _NoOpSessionConsumer(SessionConsumer):
-        """Minimal session consumer for MCP-managed sessions."""
-
-        def __init__(self, consumer_id: str) -> None:
-            self._consumer_id = ConsumerId(consumer_id)
-
-        @property
-        def consumer_id(self) -> ConsumerId:
-            return self._consumer_id
-
-        def notify(self, notification: KernelMessage) -> None:
-            pass
-
-        def connection_state(self) -> ConnectionState:
-            return ConnectionState.OPEN
-
-        def on_attach(
-            self, session: Session, event_bus: SessionEventBus
-        ) -> None:
-            pass
-
-        def on_detach(self) -> None:
-            pass
 
     @mcp.tool()
     async def create_session() -> dict[str, str]:
@@ -395,7 +410,7 @@ async def _run_stdio_server(port: int | None, sandbox: bool) -> None:
 
         session_manager.create_session(
             session_id=session_id,
-            session_consumer=_NoOpSessionConsumer(f"mcp-{session_id}"),
+            session_consumer=NoOpSessionConsumer(f"mcp-{session_id}"),
             query_params={},
             file_key=file_key,
             auto_instantiate=True,
@@ -451,7 +466,7 @@ async def _run_stdio_server(port: int | None, sandbox: bool) -> None:
         import urllib.request
 
         response = urllib.request.urlopen(
-            "https://github.com/marimo-team/marimo-pair/blob/main/SKILL.md"
+            "https://raw.githubusercontent.com/marimo-team/marimo-pair/main/SKILL.md"
         )
         print(response.read().decode("utf-8"))
         ```
@@ -497,14 +512,11 @@ async def _run_stdio_server(port: int | None, sandbox: bool) -> None:
 
             result = extract_result(session)
 
-            # Record the executed code as a new cell in the session
-            # view so _auto_save picks it up.
-            new_cell_id = CellId_t(uuid.uuid4().hex[:8])
-            session.session_view.last_executed_code[new_cell_id] = code
-            if session.session_view.cell_ids is not None:
-                session.session_view.cell_ids.cell_ids.append(new_cell_id)
-
+            # Record the executed code in the session view via the
+            # public API, then persist the notebook to disk.
+            _record_executed_code(session, code)
             _auto_save(session)
+
             contents: list[TextContent | ImageContent] = [
                 _result_to_text(result)
             ]
