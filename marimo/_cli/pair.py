@@ -17,8 +17,8 @@ from marimo._cli.errors import MarimoCLIMissingDependencyError
     "-p",
     "--port",
     type=int,
-    default=2718,
-    help="Port of running marimo server (HTTP transport only).",
+    default=None,
+    help="Port for the marimo server (auto-selects a free port if not set).",
 )
 @click.option(
     "--host",
@@ -26,7 +26,12 @@ from marimo._cli.errors import MarimoCLIMissingDependencyError
     default="127.0.0.1",
     help="Host of running marimo server (HTTP transport only).",
 )
-def pair(transport: str, port: int, host: str) -> None:
+@click.option(
+    "--sandbox/--no-sandbox",
+    default=True,
+    help="Run each session in an isolated sandbox environment.",
+)
+def pair(transport: str, port: int | None, host: str, sandbox: bool) -> None:
     from marimo._dependencies.dependencies import DependencyManager
     from marimo._mcp.pair import pair_http, pair_stdio
 
@@ -37,6 +42,6 @@ def pair(transport: str, port: int, host: str) -> None:
         )
 
     if transport == "http":
-        pair_http(host, port)
+        pair_http(host, port or 2718)
     else:
-        pair_stdio()
+        pair_stdio(port=port, sandbox=sandbox)
