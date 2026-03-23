@@ -190,11 +190,11 @@ class CachingExtension(SessionExtension, SessionEventListener):
         """Rename the path for the cache manager."""
         del old_path
         if self.mode is not CacheMode.READ_WRITE:
-            return None
+            return
         path = session.app_file_manager.path
         if self.session_cache_manager and path:
             self.session_cache_manager.rename_path(path)
-        return None
+        return
 
     def _stop(self) -> None:
         """Stop the cache manager."""
