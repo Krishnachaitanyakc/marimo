@@ -32,7 +32,6 @@ type DocumentAction =
   | { type: "sendToBottom"; payload: { cellId: CellId } }
   | { type: "dropCellOverCell"; payload: unknown }
   | { type: "dropCellOverColumn"; payload: unknown }
-  | { type: "updateCellCode"; payload: { cellId: CellId; code: string } }
   | { type: "updateCellName"; payload: { cellId: CellId; name: string } };
 
 let pendingOps: DocumentOp[] = [];
@@ -112,16 +111,6 @@ export function documentTransactionMiddleware(
       enqueue({
         type: "reorder-cells",
         cellIds: newState.cellIds.inOrderIds,
-      });
-      break;
-    }
-
-    case "updateCellCode": {
-      const { cellId, code } = action.payload;
-      enqueue({
-        type: "set-code",
-        cellId: cellId,
-        code: code,
       });
       break;
     }

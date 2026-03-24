@@ -123,11 +123,8 @@ export function applyTransactionOps(
         actions.setCellIds({ cellIds: op.cellIds as CellId[] });
         break;
       case "set-code":
-        actions.setCellCodes({
-          ids: [op.cellId as CellId],
-          codes: [op.code],
-          codeIsStale: true,
-        });
+        // Loro owns cell text — server-originated code changes arrive
+        // via the Loro WebSocket, not through document transactions.
         break;
       case "set-name":
         actions.updateCellName({
