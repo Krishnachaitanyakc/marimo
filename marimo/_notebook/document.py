@@ -15,15 +15,11 @@ from __future__ import annotations
 from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator
-
 import msgspec
-from loro import LoroDoc, LoroText
 from msgspec.structs import replace as structs_replace
 
 from marimo._ast.cell import CellConfig
-from marimo._notebook._loro import create_doc, create_text
+from marimo._notebook._loro import create_doc, create_text, unwrap_text
 from marimo._notebook.ops import (
     CreateCell,
     DeleteCell,
@@ -36,6 +32,11 @@ from marimo._notebook.ops import (
     Transaction,
 )
 from marimo._types.ids import CellId_t
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Iterator
+
+    from loro import LoroDoc, LoroText
 
 
 class NotebookCell(msgspec.Struct, frozen=True):
@@ -246,9 +247,7 @@ class NotebookDocument:
             self._cell_metas = reordered
 
         elif isinstance(op, SetCode):
-            # Verify cell exists
             self._find_meta(op.cell_id)
-            # Full replace in Loro
             text = self._get_loro_text(op.cell_id)
             if text.len_unicode > 0:
                 text.delete(0, text.len_unicode)
@@ -290,9 +289,7 @@ class NotebookDocument:
         val = self._codes_map.get(cell_id)
         if val is None:
             raise KeyError(f"No LoroText for cell {cell_id!r}")
-        container = val.container  # type: ignore[union-attr,attr-defined]
-        assert isinstance(container, LoroText)
-        return container
+        return unwrap_text(val)
 
     def _find_index(self, cell_id: CellId_t) -> int:
         for i, m in enumerate(self._cell_metas):
