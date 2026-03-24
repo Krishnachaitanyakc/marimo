@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import pytest
 from inline_snapshot import snapshot
+from loro import LoroDoc
 
 from marimo._ast.cell import CellConfig
-from marimo._notebook.document import NotebookCell, NotebookDocument
+from marimo._notebook.document import NotebookDocument
 from marimo._notebook.ops import (
     CreateCell,
     DeleteCell,
@@ -24,14 +25,14 @@ from marimo._types.ids import CellId_t
 # ------------------------------------------------------------------
 
 
-def _cell(name: str) -> NotebookCell:
-    return NotebookCell(
-        id=CellId_t(name), code="", name="__", config=CellConfig()
-    )
-
-
 def _doc(*names: str) -> NotebookDocument:
-    return NotebookDocument([_cell(n) for n in names])
+    doc = NotebookDocument(LoroDoc())
+    for n in names:
+        doc.add_cell(
+            cell_id=CellId_t(n), code="", name="__", config=CellConfig()
+        )
+    doc._loro_doc.commit()
+    return doc
 
 
 def _tx(*ops: Op, source: str = "test") -> Transaction:
@@ -310,16 +311,14 @@ class TestSetConfig:
 
     def test_preserves_existing(self) -> None:
         """Setting one field preserves other non-default fields."""
-        doc = NotebookDocument(
-            [
-                NotebookCell(
-                    id=CellId_t("a"),
-                    code="",
-                    name="__",
-                    config=CellConfig(hide_code=True, column=2),
-                )
-            ]
+        doc = NotebookDocument(LoroDoc())
+        doc.add_cell(
+            cell_id=CellId_t("a"),
+            code="",
+            name="__",
+            config=CellConfig(hide_code=True, column=2),
         )
+        doc._loro_doc.commit()
         doc.apply(_tx(SetConfig(cell_id=CellId_t("a"), disabled=True)))
         cfg = doc.get_cell(CellId_t("a")).config
         assert cfg.disabled is True
@@ -495,7 +494,7 @@ class TestInit:
         assert _ids(doc) == ["a", "b", "c"]
 
     def test_empty(self) -> None:
-        doc = NotebookDocument()
+        doc = NotebookDocument(LoroDoc())
         assert _ids(doc) == []
         assert doc.version == 0
 

@@ -26,7 +26,7 @@ from marimo._messaging.serde import (
     try_deserialize_kernel_notification_name,
 )
 from marimo._messaging.types import KernelMessage
-from marimo._notebook.document import NotebookCell, NotebookDocument
+from marimo._notebook.document import NotebookDocument
 from marimo._runtime import commands
 from marimo._runtime.commands import (
     AppMetadata,
@@ -82,6 +82,10 @@ __all__ = ["Session", "SessionImpl"]
 def _document_from_cell_manager(cell_manager: CellManager) -> NotebookDocument:
     """Build a NotebookDocument from a CellManager's current state.
 
+    Creates a ``LoroDoc`` that owns all cell text as ``LoroText``
+    containers.  Structural metadata (name, config, ordering) is stored
+    in the document's internal ``CellMeta`` list.
+
     TODO: CellManager and NotebookDocument track overlapping state (cell
     ordering, code, names, configs). Once the document model is wired
     into all consumers, we should reconcile these — either CellManager
@@ -89,17 +93,18 @@ def _document_from_cell_manager(cell_manager: CellManager) -> NotebookDocument:
     different composition. For now, the document is populated from the
     cell manager at session startup and the two coexist.
     """
-    return NotebookDocument(
-        [
-            NotebookCell(
-                id=cd.cell_id,
-                code=cd.code,
-                name=cd.name,
-                config=cd.config,
-            )
-            for cd in cell_manager.cell_data()
-        ]
-    )
+    from marimo._notebook._loro import create_doc
+
+    doc = NotebookDocument(create_doc())
+    for cd in cell_manager.cell_data():
+        doc.add_cell(
+            cell_id=cd.cell_id,
+            code=cd.code,
+            name=cd.name,
+            config=cd.config,
+        )
+    doc.loro_doc.commit()
+    return doc
 
 
 class SessionImpl(Session):

@@ -2282,7 +2282,7 @@ class Kernel:
             token = None
             if request.notebook_cells is not None:
                 token = _current_document.set(
-                    NotebookDocument(list(request.notebook_cells))
+                    NotebookDocument.from_cells(request.notebook_cells)
                 )
             try:
                 with http_request_context(request.request):

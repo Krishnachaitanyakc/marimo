@@ -24,13 +24,11 @@ from marimo._runtime.runtime import Kernel
 def _ctx(k: Kernel) -> AsyncCodeModeContext:
     """Build an AsyncCodeModeContext with a document snapshot from the kernel."""
     _current_document.set(
-        NotebookDocument(
-            [
-                NotebookCell(
-                    id=cid, code=cell.code, name="", config=cell.config
-                )
-                for cid, cell in k.graph.cells.items()
-            ]
+        NotebookDocument.from_cells(
+            NotebookCell(
+                id=cid, code=cell.code, name="", config=cell.config
+            )
+            for cid, cell in k.graph.cells.items()
         )
     )
     return AsyncCodeModeContext(k)
