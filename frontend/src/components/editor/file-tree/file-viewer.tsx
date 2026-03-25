@@ -133,7 +133,10 @@ export const FileViewer: React.FC<Props> = ({ file, onOpenNotebook }) => {
 
     if (data.isBase64 && data.contents) {
       const bytes = base64ToUint8Array(data.contents as Base64String);
-      downloadBlob(new Blob([bytes.buffer], { type: mimeType }), data.file.name);
+      downloadBlob(
+        new Blob([bytes.buffer], { type: mimeType }),
+        data.file.name,
+      );
       return;
     }
 
